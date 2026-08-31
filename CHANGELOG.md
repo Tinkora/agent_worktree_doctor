@@ -2,6 +2,11 @@
 
 All notable changes are documented here.
 
+## [0.1.0-alpha.3] - 2026-08-31
+
+- Publish the first release created after repository-level immutable releases
+  were enabled.
+
 ## [0.1.0-alpha.2] - 2026-08-31
 
 - Resolve draft releases by exact tag and release ID with bounded retries.
