@@ -44,8 +44,8 @@ will succeed.
   limited to one level of registered submodules with present work directories.
 - Redacted by default: reports omit absolute paths, branch names, commit IDs,
   lock reasons, configuration values, and Git stderr.
-- Bounded: metadata files, Git output, commands, total runtime, registered
-  worktrees, and findings all have documented limits.
+- Bounded: metadata files, Git output, commands, the cooperative total-audit
+  deadline, registered worktrees, and findings all have documented limits.
 
 JSON uses `schema_version: 1`, `kind: "agent_worktree_audit"`, `complete`,
 `summary`, and `findings`. Treat unknown finding codes and fields as

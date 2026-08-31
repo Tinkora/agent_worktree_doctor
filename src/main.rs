@@ -12,7 +12,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Command {
     Audit {
-        #[arg(required = true, num_args = 1..=64)]
+        #[arg(required = true, num_args = 1..)]
         paths: Vec<PathBuf>,
         #[arg(long)]
         include_submodules: bool,

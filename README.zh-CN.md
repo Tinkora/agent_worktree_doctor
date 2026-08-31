@@ -39,7 +39,7 @@ agent_worktree_doctor audit <PATH>... [--include-submodules]
 - 显式范围：最多 64 个输入路径；submodule 检查需主动启用，且只检查一层已登记、
   工作目录存在的 submodule。
 - 默认脱敏：报告不包含绝对路径、分支名、commit ID、锁定原因、配置值和 Git stderr。
-- 有界：元数据文件、Git 输出、命令、总运行时间、登记 worktree 数和 finding 数均有限制。
+- 有界：元数据文件、Git 输出、命令、协作式整次审计期限、登记 worktree 数和 finding 数均有限制。
 
 JSON 使用 `schema_version: 1`、`kind: "agent_worktree_audit"`、`complete`、
 `summary` 和 `findings`。请将未知 finding code 和字段视为向前兼容扩展。

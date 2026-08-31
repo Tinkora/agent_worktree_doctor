@@ -124,11 +124,18 @@ sandbox permissions, or safety of a subsequent mutating Git command.
 | Captured Git stdout | 16 MiB |
 | Captured Git stderr | 16 MiB |
 | One Git probe | 5 seconds |
-| Total audit | 60 seconds |
+| Cooperative total-audit deadline | 60 seconds |
 | Findings | 10,000 |
 
 Crossing a limit produces an incomplete audit and exit status `2`; the tool
 must not silently claim a clean result.
+
+The 60-second deadline is cooperative: it is enforced while bounded Git child
+processes run and between observations. Metadata is accepted only when it is a
+regular file and within the size limit before it is opened, so a FIFO is
+rejected instead of read. The tool cannot impose a strict wall-clock bound on
+operating-system filesystem calls, such as access to an unavailable network
+mount.
 
 ## Non-goals
 

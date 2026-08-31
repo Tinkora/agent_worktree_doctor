@@ -130,6 +130,12 @@ pub fn render(report: &Report, format: OutputFormat) -> Result<String> {
             "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
             "runs": [{
                 "tool": {"driver": {"name": "agent_worktree_doctor"}},
+                "properties": {
+                    "schema_version": report.schema_version,
+                    "kind": report.kind,
+                    "complete": report.complete,
+                    "summary": &report.summary
+                },
                 "results": report.findings.iter().map(|finding| json!({
                     "ruleId": finding.code,
                     "level": if finding.severity == Severity::Error { "error" } else { "warning" },
@@ -182,7 +188,28 @@ fn audit_input(
                 );
                 return;
             }
-            Ok(_) => {}
+            Ok(target) => {
+                if metadata_is_non_regular(&target.join("gitdir")) {
+                    add(
+                        report,
+                        "AWD007",
+                        Severity::Error,
+                        input_index,
+                        "The worktree administration backlink is missing or malformed",
+                    );
+                    return;
+                }
+                if metadata_is_non_regular(&target.join("commondir")) {
+                    add(
+                        report,
+                        "AWD006",
+                        Severity::Error,
+                        input_index,
+                        "The linked worktree commondir is missing or inconsistent",
+                    );
+                    return;
+                }
+            }
         }
     }
 
@@ -228,6 +255,32 @@ fn audit_input(
     let git_dir = path_from_git_bytes(lines[0]);
     let common_dir = path_from_git_bytes(lines[1]);
     let top_level = path_from_git_bytes(lines[2]);
+    let Some(canonical_input) = canonical(path) else {
+        incomplete(
+            report,
+            input_index,
+            "The input path could not be resolved consistently",
+        );
+        return;
+    };
+    let Some(canonical_top_level) = canonical(&top_level) else {
+        incomplete(
+            report,
+            input_index,
+            "The Git worktree root could not be resolved consistently",
+        );
+        return;
+    };
+    if !canonical_input.starts_with(&canonical_top_level) {
+        add(
+            report,
+            "AWD002",
+            Severity::Error,
+            input_index,
+            "Input resolves outside the Git worktree reported by Git",
+        );
+        return;
+    }
     let repository_key = canonical(&common_dir).unwrap_or_else(|| common_dir.clone());
     let first_repository_input = seen_repositories.insert(repository_key);
     if first_repository_input {
@@ -433,10 +486,21 @@ fn audit_submodules(path: &Path, top_level: &Path, input_index: usize, report: &
         let value = &line[separator + 1..];
         let relative = path_from_git_bytes(value);
         if relative.is_absolute()
-            || relative
-                .components()
-                .any(|part| matches!(part, std::path::Component::ParentDir))
+            || relative.components().any(|part| {
+                matches!(
+                    part,
+                    std::path::Component::ParentDir
+                        | std::path::Component::RootDir
+                        | std::path::Component::Prefix(_)
+                )
+            })
+            || relative.as_os_str().is_empty()
         {
+            incomplete(
+                report,
+                input_index,
+                "A registered submodule path is outside the supported audit scope",
+            );
             continue;
         }
         let gitfile = top_level.join(relative).join(".git");
@@ -549,8 +613,10 @@ fn read_pointer(path: &Path, base: &Path) -> Option<PathBuf> {
 }
 
 fn read_limited(path: &Path) -> Result<Vec<u8>> {
-    if fs::symlink_metadata(path)?.file_type().is_symlink()
-        || fs::metadata(path)?.len() > MAX_METADATA_BYTES
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.file_type().is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() > MAX_METADATA_BYTES
     {
         bail!("invalid metadata file");
     }
@@ -566,6 +632,10 @@ fn read_limited(path: &Path) -> Result<Vec<u8>> {
 
 fn canonical(path: &Path) -> Option<PathBuf> {
     fs::canonicalize(path).ok()
+}
+
+fn metadata_is_non_regular(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok_and(|metadata| !metadata.file_type().is_file())
 }
 
 fn trim_line(bytes: &[u8]) -> &[u8] {
@@ -595,13 +665,25 @@ fn run_git(cwd: &Path, args: &[&str]) -> Result<GitProbe> {
 }
 
 fn run_git_os(cwd: &Path, args: &[OsString]) -> Result<GitProbe> {
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    command.env_clear();
+    if let Some(path) = std::env::var_os("PATH") {
+        command.env("PATH", path);
+    }
+    #[cfg(windows)]
+    for name in ["SystemRoot", "WINDIR", "COMSPEC", "PATHEXT"] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    let mut child = command
         .arg("--no-pager")
         .arg("-C")
         .arg(cwd)
         .args(args)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("LC_ALL", "C")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -669,6 +751,7 @@ fn add(
         input_index,
         message,
     });
+    report.summary.findings = report.findings.len();
 }
 
 fn incomplete(report: &mut Report, input_index: usize, message: &'static str) {
@@ -717,5 +800,28 @@ mod tests {
             let output = render(&report, format).unwrap();
             assert!(!output.contains("/private/"));
         }
+    }
+
+    #[test]
+    fn finding_saturation_remains_machine_readable_as_incomplete() {
+        let mut report = Report {
+            schema_version: 1,
+            kind: "agent_worktree_audit",
+            complete: true,
+            summary: Summary::default(),
+            findings: Vec::new(),
+        };
+        for _ in 0..=MAX_FINDINGS {
+            add(&mut report, "AWD009", Severity::Warning, 0, "fixed");
+        }
+        assert!(!report.complete);
+        assert_eq!(report.findings.len(), MAX_FINDINGS);
+        let sarif: serde_json::Value =
+            serde_json::from_str(&render(&report, OutputFormat::Sarif).unwrap()).unwrap();
+        assert_eq!(sarif["runs"][0]["properties"]["complete"], false);
+        assert_eq!(
+            sarif["runs"][0]["properties"]["schema_version"],
+            report.schema_version
+        );
     }
 }
