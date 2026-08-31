@@ -1,0 +1,36 @@
+name: Bug report
+description: Report a reproducible Agent Worktree Doctor defect with a synthetic fixture.
+title: "bug: "
+labels: [bug]
+body:
+  - type: dropdown
+    id: format
+    attributes:
+      label: Output format
+      options:
+        - text
+        - json
+        - sarif
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Observed behavior
+      description: Include the exit status and finding codes, but remove sensitive metadata.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Synthetic reproduction
+      description: Never include real paths, repository names, branches, commit IDs, lock reasons, configuration values, credentials, or raw Git stderr.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, Git version, and Agent Worktree Doctor version.
+    validations:
+      required: true
