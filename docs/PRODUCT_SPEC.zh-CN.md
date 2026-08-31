@@ -61,7 +61,7 @@ agent_worktree_doctor audit <PATH>... [--include-submodules]
 | AWD008 | `BIDIRECTIONAL_LINK_MISMATCH` | worktree 正向与反向链接不一致。 |
 | AWD009 | `WORKTREE_PRUNABLE` | Git 报告某个已登记 worktree 可被 prune。 |
 | AWD010 | `LOCKED_WORKTREE_UNAVAILABLE` | 已锁定的登记 worktree 当前不可用。 |
-| AWD011 | `SHARED_CORE_WORKTREE` | 共享 `core.worktree` 配置可能误导 linked worktree。 |
+| AWD011 | `EXPLICIT_CORE_WORKTREE` | 有效且显式的 `core.worktree` 超出 v0.1 审计边界。 |
 | AWD012 | `SUBMODULE_GITDIR_MISSING` | 范围内已登记 submodule 指向缺失的 Git 元数据。 |
 | AWD013 | `SUBMODULE_SCOPE_MISMATCH` | 范围内 submodule 工作目录与登记元数据不一致。 |
 | AWD014 | `TRACKED_CHANGES_PRESENT` | 主动启用的状态检查发现已跟踪变更；不包含文件名。 |
@@ -97,6 +97,13 @@ Finding 使用有界、非敏感标签区分同一报告内的输入。文件系
 修复、`git worktree prune`、`git worktree remove`、`git worktree lock`、
 `git worktree unlock` 或主动写探测；不编辑配置、不创建锁、不扫描整台机器寻找仓库、
 不访问网络，也不作为服务运行。
+
+通过 `PATH` 解析出的 `git` 可执行文件属于调用者的信任边界。每一个 `PATH` 条目必须是
+绝对路径；如果空条目或相对条目可能从当前工作目录选择可执行文件，审计会在启动 Git 前
+fail closed。用户仍有责任提供只包含可信绝对目录的 `PATH`。
+
+任何有效且显式的 `core.worktree` 值均超出 v0.1 审计边界。审计会报告 `AWD011`、将
+结果标记为不完整，并在从 Git 报告的 worktree 根目录派生或读取文件之前停止处理该输入。
 
 只读审计无法证明未来可写性、ACL 行为、挂载健康、sandbox 权限或后续可变 Git 命令
 一定安全。

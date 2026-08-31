@@ -70,7 +70,7 @@ as healthy.
 | AWD008 | `BIDIRECTIONAL_LINK_MISMATCH` | Forward and backward worktree links do not agree. |
 | AWD009 | `WORKTREE_PRUNABLE` | Git reports a registered worktree as prunable. |
 | AWD010 | `LOCKED_WORKTREE_UNAVAILABLE` | A locked registered worktree is unavailable. |
-| AWD011 | `SHARED_CORE_WORKTREE` | Shared `core.worktree` configuration can misdirect linked worktrees. |
+| AWD011 | `EXPLICIT_CORE_WORKTREE` | An effective explicit `core.worktree` is outside the v0.1 audit boundary. |
 | AWD012 | `SUBMODULE_GITDIR_MISSING` | An in-scope registered submodule points to missing Git metadata. |
 | AWD013 | `SUBMODULE_SCOPE_MISMATCH` | An in-scope submodule's work directory and registered metadata disagree. |
 | AWD014 | `TRACKED_CHANGES_PRESENT` | Opt-in status checking found tracked changes; filenames are omitted. |
@@ -110,6 +110,15 @@ do not mutate repository state. The product never runs repair, `git worktree
 prune`, `git worktree remove`, `git worktree lock`, `git worktree unlock`, or an
 active write probe. It does not edit configuration, create locks, traverse the
 machine looking for repositories, contact the network, or run as a service.
+
+The `git` executable resolved from `PATH` is part of the caller's trust boundary.
+Every `PATH` entry must be absolute; the audit fails closed before spawning Git
+when an empty or relative entry could select an executable from the working
+directory. Users remain responsible for supplying a trusted absolute `PATH`.
+
+An effective explicit `core.worktree` value is outside the v0.1 audit boundary.
+The audit reports `AWD011`, marks the result incomplete, and stops processing
+that input before deriving or reading files from Git's reported worktree root.
 
 A read-only audit cannot prove future writability, ACL behavior, mount health,
 sandbox permissions, or safety of a subsequent mutating Git command.

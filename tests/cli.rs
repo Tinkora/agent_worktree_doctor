@@ -3,7 +3,14 @@ use std::process::Command;
 use tempfile::tempdir;
 
 fn binary() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_agent_worktree_doctor"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_agent_worktree_doctor"));
+    let absolute_path = std::env::join_paths(
+        std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .filter(|entry| entry.is_absolute()),
+    )
+    .unwrap();
+    command.env("PATH", absolute_path);
+    command
 }
 
 #[test]
@@ -318,10 +325,167 @@ fn core_worktree_cannot_redirect_the_input_outside_the_reported_root() {
         .args(["audit", repository.to_str().unwrap(), "--format", "json"])
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(output.status.code(), Some(2));
     let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("AWD002"));
+    assert!(stdout.contains("AWD011"));
     assert!(!stdout.contains("private-external"));
+}
+
+#[test]
+fn every_explicit_core_worktree_stops_before_derived_metadata_reads() {
+    for scenario in [
+        "temporary-root",
+        "filesystem-root",
+        "input-parent",
+        "nested-input",
+    ] {
+        let root = tempdir().unwrap();
+        let repository = root.path().join("repository");
+        let nested = repository.join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        git(root.path(), &["init", repository.to_str().unwrap()]);
+        let (input, target) = match scenario {
+            "temporary-root" => (repository.as_path(), root.path().to_path_buf()),
+            "filesystem-root" => (
+                repository.as_path(),
+                root.path().ancestors().last().unwrap().to_path_buf(),
+            ),
+            "input-parent" => (nested.as_path(), repository.clone()),
+            "nested-input" => (nested.as_path(), nested.clone()),
+            _ => unreachable!(),
+        };
+        git(
+            &repository,
+            &["config", "core.worktree", target.to_str().unwrap()],
+        );
+        if target.starts_with(root.path()) {
+            fs::write(
+                target.join(".gitmodules"),
+                "[submodule \"outside-marker\"]\npath = ../private-marker\n",
+            )
+            .unwrap();
+        }
+
+        let output = binary()
+            .args([
+                "audit",
+                input.to_str().unwrap(),
+                "--include-submodules",
+                "--format",
+                "json",
+            ])
+            .output()
+            .unwrap();
+
+        assert_eq!(output.status.code(), Some(2), "{scenario}: {output:?}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(stdout.contains("AWD011"), "{scenario}: {stdout}");
+        assert!(!stdout.contains("AWD015"), "{scenario}: {stdout}");
+        assert!(!stdout.contains("outside-marker"), "{scenario}: {stdout}");
+        assert!(!stdout.contains("private-marker"), "{scenario}: {stdout}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn relative_path_entries_cannot_select_an_untrusted_git_executable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = tempdir().unwrap();
+    let bin = root.path().join("relative-bin");
+    fs::create_dir(&bin).unwrap();
+    let marker = root.path().join("fake-git-ran");
+    let fake_git = bin.join("git");
+    fs::write(
+        &fake_git,
+        format!("#!/bin/sh\ntouch '{}'\nexit 0\n", marker.display()),
+    )
+    .unwrap();
+    fs::set_permissions(&fake_git, fs::Permissions::from_mode(0o755)).unwrap();
+    let system_path = std::env::var_os("PATH").unwrap();
+    let mut entries = vec![std::path::PathBuf::from("relative-bin")];
+    entries.extend(std::env::split_paths(&system_path));
+    let untrusted_path = std::env::join_paths(entries).unwrap();
+
+    let output = binary()
+        .current_dir(root.path())
+        .args(["audit", ".", "--format", "json"])
+        .env("PATH", untrusted_path)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(!marker.exists(), "a relative PATH entry selected fake git");
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+#[test]
+fn non_utf8_worktree_path_is_supported_without_disclosure() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let root = tempdir().unwrap();
+    let name = std::ffi::OsString::from_vec(b"worktree-\xff".to_vec());
+    let repository = root.path().join(name);
+    fs::create_dir(&repository).unwrap();
+
+    let output = binary()
+        .arg("audit")
+        .arg(&repository)
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.windows(6).any(|bytes| bytes == b"AWD002"));
+    assert!(!output
+        .stdout
+        .windows(10)
+        .any(|bytes| bytes == b"worktree-\xff"));
+}
+
+#[test]
+fn healthy_worktrees_support_spaces_and_unicode() {
+    let root = tempdir().unwrap();
+    let main = root.path().join("main space 中文🧰");
+    let linked = root.path().join("linked space 中文🧰");
+    git(root.path(), &["init", main.to_str().unwrap()]);
+    git(&main, &["config", "user.name", "Fixture"]);
+    git(&main, &["config", "user.email", "fixture@example.invalid"]);
+    fs::write(main.join("file.txt"), "fixture\n").unwrap();
+    git(&main, &["add", "file.txt"]);
+    git(&main, &["commit", "-m", "fixture"]);
+    git(
+        &main,
+        &["worktree", "add", "--detach", linked.to_str().unwrap()],
+    );
+
+    let output = binary()
+        .args(["audit", linked.to_str().unwrap(), "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert!(!String::from_utf8(output.stdout)
+        .unwrap()
+        .contains("main space"));
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_case_variant_and_long_path_are_supported_when_available() {
+    let root = tempdir().unwrap();
+    let repository = root
+        .path()
+        .join("CaseMain")
+        .join("long_segment_0123456789".repeat(5));
+    fs::create_dir_all(repository.parent().unwrap()).unwrap();
+    git(root.path(), &["init", repository.to_str().unwrap()]);
+    let case_variant =
+        std::path::PathBuf::from(repository.to_string_lossy().replace("CaseMain", "casemain"));
+    let output = binary()
+        .args(["audit", case_variant.to_str().unwrap(), "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
 }
 
 #[cfg(unix)]

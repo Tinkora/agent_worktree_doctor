@@ -213,6 +213,29 @@ fn audit_input(
         }
     }
 
+    match run_git(path, &["config", "--get", "core.worktree"]) {
+        Ok(probe) if probe.success => {
+            add(
+                report,
+                "AWD011",
+                Severity::Error,
+                input_index,
+                "An explicit core.worktree configuration is outside the supported audit scope",
+            );
+            report.complete = false;
+            return;
+        }
+        Ok(_) => {}
+        Err(_) => {
+            probe_failed(
+                report,
+                input_index,
+                "Git could not determine whether core.worktree is configured",
+            );
+            return;
+        }
+    }
+
     let probe = match run_git(
         path,
         &[
@@ -292,7 +315,6 @@ fn audit_input(
     }
     if first_repository_input {
         audit_registry(path, input_index, report);
-        audit_shared_core_worktree(path, &common_dir, input_index, report);
     }
     if options.include_submodules {
         audit_submodules(path, &top_level, input_index, report);
@@ -382,48 +404,6 @@ fn audit_registry(path: &Path, input_index: usize, report: &mut Report) {
             input_index,
             "Git could not enumerate registered worktrees",
         ),
-    }
-}
-
-fn audit_shared_core_worktree(
-    path: &Path,
-    common_dir: &Path,
-    input_index: usize,
-    report: &mut Report,
-) {
-    let extension = run_git(
-        path,
-        &[
-            "config",
-            "--type=bool",
-            "--get",
-            "extensions.worktreeConfig",
-        ],
-    );
-    let enabled =
-        matches!(extension, Ok(ref probe) if probe.success && probe.stdout.starts_with(b"true"));
-    if !enabled {
-        return;
-    }
-    let config = common_dir.join("config");
-    let shared = run_git_os(
-        path,
-        &[
-            OsString::from("config"),
-            OsString::from("--file"),
-            config.into_os_string(),
-            OsString::from("--get"),
-            OsString::from("core.worktree"),
-        ],
-    );
-    if matches!(shared, Ok(ref probe) if probe.success) {
-        add(
-            report,
-            "AWD011",
-            Severity::Error,
-            input_index,
-            "Shared core.worktree conflicts with worktree-specific configuration",
-        );
     }
 }
 
@@ -665,11 +645,15 @@ fn run_git(cwd: &Path, args: &[&str]) -> Result<GitProbe> {
 }
 
 fn run_git_os(cwd: &Path, args: &[OsString]) -> Result<GitProbe> {
+    let path = std::env::var_os("PATH").ok_or_else(|| anyhow::anyhow!("PATH is unavailable"))?;
+    if std::env::split_paths(&path)
+        .any(|entry| entry.as_os_str().is_empty() || !entry.is_absolute())
+    {
+        bail!("PATH contains a relative entry");
+    }
     let mut command = Command::new("git");
     command.env_clear();
-    if let Some(path) = std::env::var_os("PATH") {
-        command.env("PATH", path);
-    }
+    command.env("PATH", path);
     #[cfg(windows)]
     for name in ["SystemRoot", "WINDIR", "COMSPEC", "PATHEXT"] {
         if let Some(value) = std::env::var_os(name) {
